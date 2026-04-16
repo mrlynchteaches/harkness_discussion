@@ -12,10 +12,11 @@ const sampleState = {
     "What evidence from the text most changes your interpretation of John Proctor?"
   ],
   rubric: [
-    { id: "r1", label: "Textual evidence", value: 2, color: "#2563eb" },
-    { id: "r2", label: "Builds on a peer's idea", value: 2, color: "#7c3aed" },
+    { id: "r1", label: "Uses text based evidence", value: 1, color: "#2563eb" },
+    { id: "r2", label: "Builds on a peer's idea", value: 1, color: "#7c3aed" },
     { id: "r3", label: "Invites or includes another voice", value: 1, color: "#059669" },
-    { id: "r4", label: "Asks a probing question", value: 1, color: "#d97706" }
+    { id: "r4", label: "Asks a probing or clarifying question", value: 1, color: "#d97706" },
+    { id: "r5", label: "Provides nuance or respectful critique", value: 1, color: "#FF2E2E" }
   ],
   students: [
     { id: "s1", username: "amelia", displayName: "Amelia", points: 4, queued: false, spokeCount: 2 },
@@ -713,7 +714,7 @@ function render() {
       <section class="hero no-print">
         <div class="hero-row">
           <div>
-            <div class="badge">Teacher-focused GitHub Pages package</div>
+            <div class="badge">Harkness Discussion Tracker</div>
             <h1>Harkness Discussion Tracker</h1>
             <div class="muted">A teacher-operated, no-backend discussion tracker designed for GitHub Pages. Import a roster and rubric, manage the queue, award points, map student-to-student responses, and export session results as CSV, JSON, or printable PDF.</div>
           </div>
