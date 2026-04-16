@@ -51,14 +51,12 @@ const ui = {
   syncStatus: "waiting"
 };
 
-const myTabId = crypto.randomUUID ? crypto.randomUUID() : `tab-${Math.random().toString(36).slice(2,9)}`;
+const myTabId = crypto.randomUUID ? crypto.randomUUID() : `tab-${Math.random().toString(36).slice(2, 9)}`;
 let peers = new Map();
 let state = loadState();
 const app = document.getElementById("app");
 const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(CHANNEL_NAME) : null;
 let heartbeatTimer = null;
-let renderScheduled = false;
-let lastRenderContext = null;
 
 if (channel) {
   channel.onmessage = (event) => {
@@ -148,16 +146,6 @@ function csvEscape(value) {
   return `"${String(value ?? "").replaceAll('"', '""')}"`;
 }
 
-function downloadText(filename, text, mime = "text/plain;charset=utf-8") {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
 function parseCsv(text) {
   const rows = [];
   let row = [];
@@ -215,6 +203,16 @@ function safeJsonParse(text, fallback) {
   }
 }
 
+function downloadText(filename, text, mime = "text/plain;charset=utf-8") {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function colorFromIndex(index) {
   const palette = ["#2563eb", "#7c3aed", "#059669", "#d97706", "#dc2626", "#0891b2", "#4f46e5", "#65a30d"];
   return palette[index % palette.length];
@@ -234,14 +232,11 @@ function prunePeers() {
 }
 
 function updateSyncStatus() {
-  if (!channel) {
-    ui.syncStatus = "offline";
-  } else if (peers.size > 0) {
-    ui.syncStatus = "connected";
-  } else {
-    ui.syncStatus = "waiting";
+  const nextStatus = !channel ? "offline" : peers.size > 0 ? "connected" : "waiting";
+  if (ui.syncStatus !== nextStatus) {
+    ui.syncStatus = nextStatus;
+    render();
   }
-  render();
 }
 
 function syncIndicatorHtml() {
@@ -252,32 +247,6 @@ function syncIndicatorHtml() {
     return '<div class="sync-pill waiting"><span class="dot waiting"></span>Live sync waiting for second tab</div>';
   }
   return '<div class="sync-pill offline"><span class="dot offline"></span>Live sync unavailable</div>';
-}
-
-function updateState(next) {
-  state = next;
-  saveState();
-  if (channel) {
-    channel.postMessage({ type: "state-sync", senderId: myTabId, payload: state });
-  }
-  render();
-}
-
-function setUI(partial, options = {}) {
-  Object.assign(ui, partial);
-  if (options.render !== false) {
-    render();
-  }
-}
-
-function scheduleRender() {
-  if (renderScheduled) return;
-  renderScheduled = true;
-  requestAnimationFrame(() => {
-    renderScheduled = false;
-    render(lastRenderContext);
-    lastRenderContext = null;
-  });
 }
 
 function captureRenderContext() {
@@ -303,6 +272,18 @@ function restoreRenderContext(ctx) {
       el.setSelectionRange(ctx.selectionStart, ctx.selectionEnd ?? ctx.selectionStart);
     }
   } catch {}
+}
+
+function setUI(partial, options = {}) {
+  Object.assign(ui, partial);
+  if (options.render !== false) render();
+}
+
+function updateState(next) {
+  state = next;
+  saveState();
+  if (channel) channel.postMessage({ type: "state-sync", senderId: myTabId, payload: state });
+  render();
 }
 
 function getStudent(id) {
@@ -379,17 +360,32 @@ function addPoints() {
     nextConnections.push({ from: ui.selectedSpeaker, to: ui.selectedTarget, weight: 1, rubricId: rubricItem.id, category: rubricItem.label });
   }
   const event = {
-    id: Date.now(), speaker: speaker.username, speakerId: speaker.id,
-    target: target?.displayName || target?.username || "", targetId: ui.selectedTarget || "",
-    points, rubricId: rubricItem.id, category: rubricItem.label, note: ui.note.trim(), timestamp: nowTime()
+    id: Date.now(),
+    speaker: speaker.username,
+    speakerId: speaker.id,
+    target: target?.displayName || target?.username || "",
+    targetId: ui.selectedTarget || "",
+    points,
+    rubricId: rubricItem.id,
+    category: rubricItem.label,
+    note: ui.note.trim(),
+    timestamp: nowTime()
   };
-  updateState({ ...state, students: updatedStudents, queue: state.queue.filter((id) => id !== ui.selectedSpeaker), connections: nextConnections, events: [event, ...state.events].slice(0, 250) });
+
+  updateState({
+    ...state,
+    students: updatedStudents,
+    queue: state.queue.filter((id) => id !== ui.selectedSpeaker),
+    connections: nextConnections,
+    events: [event, ...state.events].slice(0, 250)
+  });
   ui.note = "";
 }
 
 async function importRoster(file) {
   const text = await fileToText(file);
   let students = [];
+
   if (file.name.toLowerCase().endsWith(".json")) {
     students = Array.isArray(safeJsonParse(text, [])) ? safeJsonParse(text, []) : [];
   } else {
@@ -399,12 +395,14 @@ async function importRoster(file) {
     const dataRows = rows.slice(1);
     const nameIndex = header.findIndex((h) => ["displayname", "name", "student", "studentname"].includes(h));
     const userIndex = header.findIndex((h) => ["username", "user"].includes(h));
+
     students = dataRows.map((row) => {
       const displayName = row[nameIndex >= 0 ? nameIndex : 0] || row[0] || "Student";
       const username = row[userIndex >= 0 ? userIndex : 0] || displayName.toLowerCase().replace(/\s+/g, "-");
       return { displayName, username };
     });
   }
+
   const normalized = students.filter(Boolean).map((student, index) => ({
     id: student.id || uid(`stu${index}`),
     username: (student.username || student.displayName || `student-${index + 1}`).toLowerCase().replace(/\s+/g, "-"),
@@ -413,6 +411,7 @@ async function importRoster(file) {
     queued: false,
     spokeCount: Number(student.spokeCount || 0)
   }));
+
   updateState({ ...state, students: normalized, queue: [], connections: [], events: [] });
   ui.importStatus = `Imported ${normalized.length} student(s) from ${file.name}.`;
 }
@@ -436,12 +435,14 @@ async function importRubric(file) {
       color: row[colorIndex] || colorFromIndex(index)
     }));
   }
+
   const normalized = rubric.filter((item) => item && item.label).map((item, index) => ({
     id: item.id || uid(`rubric${index}`),
     label: item.label,
     value: Number(item.value || 1),
     color: item.color || colorFromIndex(index)
   }));
+
   if (normalized.length > 0) {
     updateState({ ...state, rubric: normalized });
     ui.selectedRubricId = normalized[0].id;
@@ -469,9 +470,7 @@ function exportJson() {
 function resetDemo() {
   state = JSON.parse(JSON.stringify(sampleState));
   saveState();
-  if (channel) {
-    channel.postMessage({ type: "state-sync", senderId: myTabId, payload: state });
-  }
+  if (channel) channel.postMessage({ type: "state-sync", senderId: myTabId, payload: state });
   ui.selectedSpeaker = state.students[0]?.id || "";
   ui.selectedTarget = "";
   ui.selectedRubricId = state.rubric[0]?.id || "";
@@ -503,10 +502,9 @@ function radialSvg(hidePoints = false) {
   const rubricById = Object.fromEntries(state.rubric.map((item) => [item.id, item]));
   const positioned = state.students.map((student, index) => {
     const angle = (Math.PI * 2 * index) / total - Math.PI / 2;
-    const x = center + radius * Math.cos(angle);
-    const y = center + radius * Math.sin(angle);
-    return { ...student, x, y };
+    return { ...student, x: center + radius * Math.cos(angle), y: center + radius * Math.sin(angle) };
   });
+
   const edges = mergedConnections().map((edge, idx) => {
     const from = positioned.find((p) => p.id === edge.from);
     const to = positioned.find((p) => p.id === edge.to);
@@ -527,19 +525,20 @@ function radialSvg(hidePoints = false) {
         <circle cx="${to.x}" cy="${to.y}" r="2.2" fill="${edgeColor}" />
       </g>`;
   }).join("");
+
   const nodes = positioned.map((student) => {
     const isSelected = ui.selectedNode === student.id;
     const sizeBoost = hidePoints ? 0 : Math.min(student.points * 1.8, 20);
     const nodeRadius = 18 + sizeBoost / 3;
-    const haloFill = student.queued ? "#fef3c7" : "#ffffff";
     return `
       <g data-student-id="${student.id}" class="student-node">
-        <circle cx="${student.x}" cy="${student.y}" r="${nodeRadius + (student.queued ? 7 : 0)}" fill="${haloFill}" stroke="${isSelected ? "#0f766e" : "#cbd5e1"}" stroke-width="${isSelected ? 4 : 2}" />
+        <circle cx="${student.x}" cy="${student.y}" r="${nodeRadius + (student.queued ? 7 : 0)}" fill="${student.queued ? "#fef3c7" : "#ffffff"}" stroke="${isSelected ? "#0f766e" : "#cbd5e1"}" stroke-width="${isSelected ? 4 : 2}" />
         <circle cx="${student.x}" cy="${student.y}" r="${nodeRadius}" fill="${isSelected ? "#ccfbf1" : "#eff6ff"}" stroke="#94a3b8" />
         <text x="${student.x}" y="${student.y - 2}" text-anchor="middle" fill="#0f172a" font-size="12" font-weight="700">${escapeHtml(student.displayName || student.username)}</text>
         ${hidePoints ? "" : `<text x="${student.x}" y="${student.y + 14}" text-anchor="middle" fill="#64748b" font-size="10">${student.points} pts</text>`}
       </g>`;
   }).join("");
+
   return `
     <div class="svg-wrap">
       <svg viewBox="0 0 ${size} ${size}">
@@ -565,6 +564,10 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function statCard(label, value, hint) {
+  return `<section class="card stat"><div class="muted">${escapeHtml(label)}</div><div class="big">${escapeHtml(value)}</div><div class="subtle">${escapeHtml(hint)}</div></section>`;
+}
+
 function teacherView() {
   const rubricItem = selectedRubric();
   return `
@@ -577,16 +580,13 @@ function teacherView() {
 
     <div class="layout-main no-print">
       <section class="card">
-        <div class="row-between">
-          <h2>Live discussion map</h2>
-          <div class="muted">Click a node to highlight a student.</div>
-        </div>
+        <div class="row-between"><h2>Live discussion map</h2><div class="muted">Click a node to highlight a student.</div></div>
         ${radialSvg(false)}
       </section>
 
-      <div class="stack">
-        <section class="card">
-          <div class="row-between"><h2>Award participation points</h2></div>
+      <section class="card">
+        <div class="row-between"><h2>Participation + student management</h2><div class="muted">Score contributions and queue/select students without scrolling away.</div></div>
+        <div class="two-col-even">
           <div class="form-grid">
             <div>
               <label>Speaker</label>
@@ -620,45 +620,41 @@ function teacherView() {
             <button class="btn btn-primary" id="addPointsBtn">Add points + log contribution</button>
             ${rubricItem ? `<div class="notice">Default value for <strong>${escapeHtml(rubricItem.label)}</strong> is <strong>${rubricItem.value}</strong> point(s).</div>` : ""}
           </div>
-        </section>
 
-        <section class="card">
-          <div class="row-between">
-            <h2>Session controls</h2>
-            <button class="btn ${state.sessionStatus === "open" ? "btn-rose" : "btn-teal"}" id="toggleSessionStatusBtn">${state.sessionStatus === "open" ? "Close session + reveal map" : "Re-open session"}</button>
+          <div>
+            <div class="item" style="margin-bottom:12px;">
+              <div style="font-weight:700; margin-bottom:12px;">Quick add student</div>
+              <div class="two-col-wide">
+                <input id="newStudentNameInput" type="text" value="${escapeHtml(ui.newStudentName)}" placeholder="Enter student name" />
+                <button class="btn" id="addStudentBtn">Add student</button>
+              </div>
+            </div>
+
+            <div class="list-stack" style="max-height:540px; overflow:auto; padding-right:4px;">
+              ${state.students.map((student) => `
+                <div class="item ${ui.selectedNode === student.id ? "selected" : ""}">
+                  <div class="row-between">
+                    <div>
+                      <div style="font-weight:700;">${escapeHtml(student.displayName || student.username)}</div>
+                      <div class="subtle" style="margin-top:4px;">${escapeHtml(student.username)} • ${student.points} pts • ${student.spokeCount} contribution(s)</div>
+                    </div>
+                    <button class="btn small" data-remove-student="${student.id}">Remove</button>
+                  </div>
+                  <div class="btn-group" style="margin-top:12px;">
+                    <button class="btn small" data-toggle-queue="${student.id}">${state.queue.includes(student.id) ? "Remove from queue" : "Queue speaker"}</button>
+                    <button class="btn small" data-select-speaker="${student.id}">Select for scoring</button>
+                    <button class="btn small" data-highlight-node="${student.id}">Highlight map</button>
+                  </div>
+                </div>`).join("")}
+            </div>
           </div>
-          <div class="two-col-even">
-            <div>
-              <label>Class name</label>
-              <input id="classNameInput" type="text" value="${escapeHtml(state.className)}" placeholder="Enter class name" />
-            </div>
-            <div>
-              <label>Session title</label>
-              <input id="sessionTitleInput" type="text" value="${escapeHtml(state.sessionTitle)}" placeholder="Enter session title" />
-            </div>
-            <div>
-              <label>Session code</label>
-              <input id="sessionCodeInput" type="text" value="${escapeHtml(state.sessionCode)}" placeholder="Enter session code" />
-            </div>
-            <div class="btn-group" style="align-items:end;">
-              <button class="btn" id="printBtn">Print / Save PDF</button>
-              <button class="btn" id="resetBtn">Reset demo</button>
-            </div>
-          </div>
-        </section>
-      </div>
+        </div>
+      </section>
     </div>
 
     <div class="layout-lower no-print">
       <section class="card">
-        <div class="row-between">
-          <h2>Roster, rubric, and exports</h2>
-          <div class="btn-group">
-            <button class="btn small" id="exportStudentsBtn">Export students CSV</button>
-            <button class="btn small" id="exportEventsBtn">Export events CSV</button>
-            <button class="btn small" id="exportJsonBtn">Export JSON</button>
-          </div>
-        </div>
+        <div class="row-between"><h2>Roster, rubric, and exports</h2><div class="btn-group"><button class="btn small" id="exportStudentsBtn">Export students CSV</button><button class="btn small" id="exportEventsBtn">Export events CSV</button><button class="btn small" id="exportJsonBtn">Export JSON</button></div></div>
         <div class="two-col-even">
           <div class="item">
             <div style="font-weight:700;">Import roster</div>
@@ -673,87 +669,15 @@ function teacherView() {
             <button class="btn btn-primary" style="margin-top:12px;" id="chooseRubricBtn">Choose rubric file</button>
           </div>
         </div>
-
         ${ui.importStatus ? `<div class="notice" style="margin-top:16px;">${escapeHtml(ui.importStatus)}</div>` : ""}
-
-        <div class="item" style="margin-top:16px;">
-          <div style="font-weight:700; margin-bottom:12px;">Quick add student</div>
-          <div class="two-col-wide">
-            <input id="newStudentNameInput" type="text" value="${escapeHtml(ui.newStudentName)}" placeholder="Enter student name" />
-            <button class="btn" id="addStudentBtn">Add student</button>
-          </div>
-        </div>
-
-        <div class="student-grid" style="margin-top:16px;">
-          ${state.students.map((student) => `
-            <div class="item ${ui.selectedNode === student.id ? "selected" : ""}">
-              <div class="row-between">
-                <div>
-                  <div style="font-weight:700;">${escapeHtml(student.displayName || student.username)}</div>
-                  <div class="subtle" style="margin-top:4px;">${escapeHtml(student.username)} • ${student.points} pts • ${student.spokeCount} contribution(s)</div>
-                </div>
-                <button class="btn small" data-remove-student="${student.id}">Remove</button>
-              </div>
-              <div class="btn-group" style="margin-top:12px;">
-                <button class="btn small" data-toggle-queue="${student.id}">${state.queue.includes(student.id) ? "Remove from queue" : "Queue speaker"}</button>
-                <button class="btn small" data-select-speaker="${student.id}">Select for scoring</button>
-                <button class="btn small" data-highlight-node="${student.id}">Highlight map</button>
-              </div>
-            </div>`).join("")}
-        </div>
       </section>
 
       <div class="stack">
-        <section class="card">
-          <div class="row-between"><h2>Speaker queue</h2></div>
-          <div class="queue-list" style="margin-top:16px;">
-            ${state.queue.length === 0 ? `<div class="muted">Nobody is waiting to speak.</div>` : ""}
-            ${state.queue.map((id, idx) => {
-              const student = getStudent(id);
-              if (!student) return "";
-              return `
-                <div class="queue-row">
-                  <div class="row-between" style="align-items:center;">
-                    <div>
-                      <div style="font-weight:700;">${idx + 1}. ${escapeHtml(student.displayName || student.username)}</div>
-                      <div class="subtle">${student.points} pts • ${student.spokeCount} contributions logged</div>
-                    </div>
-                    <div class="btn-group">
-                      <button class="btn small" data-queue-up="${id}">↑</button>
-                      <button class="btn small" data-queue-down="${id}">↓</button>
-                      <button class="btn small" data-toggle-queue="${id}">Done</button>
-                    </div>
-                  </div>
-                </div>`;
-            }).join("")}
-          </div>
-        </section>
-
-        <section class="card">
-          <div class="row-between"><h2>Discussion questions</h2></div>
-          <div class="list-stack" style="margin-top:16px;">
-            ${state.questions.map((q, index) => `<div class="list-box">${index + 1}. ${escapeHtml(q)}</div>`).join("")}
-            ${state.questions.length === 0 ? `<div class="muted">No discussion questions entered yet.</div>` : ""}
-            <div class="two-col-wide">
-              <input id="newQuestionInput" type="text" value="${escapeHtml(ui.newQuestion)}" placeholder="Add a new discussion question" />
-              <button class="btn" id="addQuestionBtn">Add question</button>
-            </div>
-          </div>
-        </section>
-
-        <section class="card">
-          <div class="row-between"><h2>Scoring criteria</h2></div>
-          <div class="list-stack" style="margin-top:16px;">
-            ${state.rubric.map((item) => `<div class="item" style="display:flex; justify-content:space-between; align-items:center; gap:12px;"><span style="display:flex; align-items:center; gap:8px;"><span class="dot" style="background:${item.color}"></span>${escapeHtml(item.label)}</span><strong>${item.value} pt</strong></div>`).join("")}
-          </div>
-        </section>
-
-        <section class="card">
-          <div class="row-between"><h2>Recent contribution log</h2></div>
-          <div class="event-list" style="margin-top:16px;">
-            ${state.events.map((event) => `<div class="event-row"><div class="row-between"><div><div style="font-weight:700;">${escapeHtml(event.speaker)}</div><div class="subtle">${escapeHtml(event.timestamp)}</div></div><div class="legend-pill">+${event.points} pts</div></div><div style="margin-top:6px; color:#475569;">${escapeHtml(event.category)}${event.target ? ` • responding to ${escapeHtml(event.target)}` : ""}</div>${event.note ? `<div style="margin-top:6px; color:#64748b;">${escapeHtml(event.note)}</div>` : ""}</div>`).join("")}
-          </div>
-        </section>
+        <section class="card"><div class="row-between"><h2>Speaker queue</h2></div><div class="queue-list" style="margin-top:16px;">${state.queue.length === 0 ? `<div class="muted">Nobody is waiting to speak.</div>` : ""}${state.queue.map((id, idx) => { const student = getStudent(id); if (!student) return ""; return `<div class="queue-row"><div class="row-between" style="align-items:center;"><div><div style="font-weight:700;">${idx + 1}. ${escapeHtml(student.displayName || student.username)}</div><div class="subtle">${student.points} pts • ${student.spokeCount} contributions logged</div></div><div class="btn-group"><button class="btn small" data-queue-up="${id}">↑</button><button class="btn small" data-queue-down="${id}">↓</button><button class="btn small" data-toggle-queue="${id}">Done</button></div></div></div>`; }).join("")}</div></section>
+        <section class="card"><div class="row-between"><h2>Discussion questions</h2></div><div class="list-stack" style="margin-top:16px;">${state.questions.map((q, index) => `<div class="list-box">${index + 1}. ${escapeHtml(q)}</div>`).join("")}${state.questions.length === 0 ? `<div class="muted">No discussion questions entered yet.</div>` : ""}<div class="two-col-wide"><input id="newQuestionInput" type="text" value="${escapeHtml(ui.newQuestion)}" placeholder="Add a new discussion question" /><button class="btn" id="addQuestionBtn">Add question</button></div></div></section>
+        <section class="card"><div class="row-between"><h2>Scoring criteria</h2></div><div class="list-stack" style="margin-top:16px;">${state.rubric.map((item) => `<div class="item" style="display:flex; justify-content:space-between; align-items:center; gap:12px;"><span style="display:flex; align-items:center; gap:8px;"><span class="dot" style="background:${item.color}"></span>${escapeHtml(item.label)}</span><strong>${item.value} pt</strong></div>`).join("")}</div></section>
+        <section class="card"><div class="row-between"><h2>Session controls</h2><button class="btn ${state.sessionStatus === "open" ? "btn-rose" : "btn-teal"}" id="toggleSessionStatusBtn">${state.sessionStatus === "open" ? "Close session + reveal map" : "Re-open session"}</button></div><div class="two-col-even" style="margin-top:16px;"><div><label>Class name</label><input id="classNameInput" type="text" value="${escapeHtml(state.className)}" placeholder="Enter class name" /></div><div><label>Session title</label><input id="sessionTitleInput" type="text" value="${escapeHtml(state.sessionTitle)}" placeholder="Enter session title" /></div><div><label>Session code</label><input id="sessionCodeInput" type="text" value="${escapeHtml(state.sessionCode)}" placeholder="Enter session code" /></div><div class="btn-group" style="align-items:end;"><button class="btn" id="printBtn">Print / Save PDF</button><button class="btn" id="resetBtn">Reset demo</button></div></div></section>
+        <section class="card"><div class="row-between"><h2>Recent contribution log</h2></div><div class="event-list" style="margin-top:16px;">${state.events.map((event) => `<div class="event-row"><div class="row-between"><div><div style="font-weight:700;">${escapeHtml(event.speaker)}</div><div class="subtle">${escapeHtml(event.timestamp)}</div></div><div class="legend-pill">+${event.points} pts</div></div><div style="margin-top:6px; color:#475569;">${escapeHtml(event.category)}${event.target ? ` • responding to ${escapeHtml(event.target)}` : ""}</div>${event.note ? `<div style="margin-top:6px; color:#64748b;">${escapeHtml(event.note)}</div>` : ""}</div>`).join("")}</div></section>
       </div>
     </div>`;
 }
@@ -770,46 +694,18 @@ function displayView() {
             <h1 style="margin:12px 0 8px;">${escapeHtml(state.sessionTitle || "Discussion Session")}</h1>
             <div class="muted">${escapeHtml(state.className || "Class")}${state.sessionCode ? ` • Session code: <span class="mono" style="font-weight:700;">${escapeHtml(state.sessionCode)}</span>` : ""}</div>
           </div>
-          <div class="lite">
-            <div class="label">Discussion status</div>
-            <div class="value">${state.sessionStatus === "closed" ? "Closed — map visible" : "Open — queue/questions visible"}</div>
-          </div>
+          <div class="lite"><div class="label">Discussion status</div><div class="value">${state.sessionStatus === "closed" ? "Closed — map visible" : "Open — queue/questions visible"}</div></div>
         </div>
       </section>
-
       <div class="${gridClass}">
-        <section class="card">
-          <div class="row-between"><h2>Speaking queue</h2></div>
-          <div class="list-stack" style="margin-top:16px;">
-            ${queueStudents.length === 0 ? `<div class="muted">No one is waiting to speak right now.</div>` : ""}
-            ${queueStudents.map((student, index) => `<div class="display-queue">${index + 1}. ${escapeHtml(student.displayName || student.username)}</div>`).join("")}
-          </div>
-        </section>
-
+        <section class="card"><div class="row-between"><h2>Speaking queue</h2></div><div class="list-stack" style="margin-top:16px;">${queueStudents.length === 0 ? `<div class="muted">No one is waiting to speak right now.</div>` : ""}${queueStudents.map((student, index) => `<div class="display-queue">${index + 1}. ${escapeHtml(student.displayName || student.username)}</div>`).join("")}</div></section>
         <div class="stack">
-          <section class="card">
-            <div class="row-between"><h2>Discussion questions</h2></div>
-            <div class="list-stack" style="margin-top:16px;">
-              ${state.questions.map((q, index) => `<div class="item">${index + 1}. ${escapeHtml(q)}</div>`).join("")}
-              ${state.questions.length === 0 ? `<div class="muted">No discussion questions entered yet.</div>` : ""}
-            </div>
-          </section>
-
-          <section class="card">
-            <div class="row-between"><h2>Scoring criteria</h2></div>
-            <div class="list-stack" style="margin-top:16px;">
-              ${state.rubric.map((item) => `<div class="item" style="display:flex; justify-content:space-between; align-items:center; gap:12px;"><span style="display:flex; align-items:center; gap:8px;"><span class="dot" style="background:${item.color}"></span>${escapeHtml(item.label)}</span><strong>${item.value} pt</strong></div>`).join("")}
-            </div>
-          </section>
+          <section class="card"><div class="row-between"><h2>Discussion questions</h2></div><div class="list-stack" style="margin-top:16px;">${state.questions.map((q, index) => `<div class="item">${index + 1}. ${escapeHtml(q)}</div>`).join("")}${state.questions.length === 0 ? `<div class="muted">No discussion questions entered yet.</div>` : ""}</div></section>
+          <section class="card"><div class="row-between"><h2>Scoring criteria</h2></div><div class="list-stack" style="margin-top:16px;">${state.rubric.map((item) => `<div class="item" style="display:flex; justify-content:space-between; align-items:center; gap:12px;"><span style="display:flex; align-items:center; gap:8px;"><span class="dot" style="background:${item.color}"></span>${escapeHtml(item.label)}</span><strong>${item.value} pt</strong></div>`).join("")}</div></section>
         </div>
       </div>
-
       ${state.sessionStatus === "closed" ? `<section class="card"><div class="row-between"><h2>Final discussion map</h2></div>${radialSvg(true)}</section>` : ""}
     </div>`;
-}
-
-function statCard(label, value, hint) {
-  return `<section class="card stat"><div class="muted">${escapeHtml(label)}</div><div class="big">${escapeHtml(value)}</div><div class="subtle">${escapeHtml(hint)}</div></section>`;
 }
 
 function render(preservedContext = null) {
@@ -833,31 +729,22 @@ function render(preservedContext = null) {
             <div class="muted">A teacher-operated, no-backend discussion tracker designed for GitHub Pages. Import a roster and rubric, manage the queue, award points, map student-to-student responses, and export session results as CSV, JSON, or printable PDF.</div>
           </div>
           <div class="top-panels">
-            <div class="lite">
-              <div class="label">Live sync</div>
-              <div style="margin-top:8px;">${syncIndicatorHtml()}</div>
-            </div>
-            <div class="lite">
-              <div class="label">View mode</div>
-              <div class="segmented">
-                <button class="${ui.view === "teacher" ? "active" : ""}" id="viewTeacherBtn">Teacher</button>
-                <button class="${ui.view === "display" ? "active" : ""}" id="viewDisplayBtn">Student display</button>
-              </div>
-            </div>
+            <div class="lite"><div class="label">Live sync</div><div style="margin-top:8px;">${syncIndicatorHtml()}</div></div>
+            <div class="lite"><div class="label">View mode</div><div class="segmented"><button class="${ui.view === "teacher" ? "active" : ""}" id="viewTeacherBtn">Teacher</button><button class="${ui.view === "display" ? "active" : ""}" id="viewDisplayBtn">Student display</button></div></div>
           </div>
         </div>
       </section>
-
       ${ui.view === "teacher" ? teacherView() : displayView()}
-
-      <section class="footer-note no-print">
-        <div style="font-weight:700; color:#0f172a;">Deployment note</div>
-        <div style="margin-top:6px;">Open the site in one tab/window for Teacher view and again with <span class="mono">?view=display</span> for the student screen. If the sync pill says connected, live updates are active.</div>
-      </section>
+      <section class="footer-note no-print"><div style="font-weight:700; color:#0f172a;">Deployment note</div><div style="margin-top:6px;">Open the site in one tab/window for Teacher view and again with <span class="mono">?view=display</span> for the student screen. If the sync pill says connected, live updates are active.</div></section>
     </div>`;
 
   bindEvents();
   restoreRenderContext(renderContext);
+}
+
+function removeFocusThen(action) {
+  try { document.activeElement?.blur?.(); } catch {}
+  action();
 }
 
 function bindEvents() {
@@ -879,19 +766,15 @@ function bindEvents() {
     const selected = state.rubric.find((r) => r.id === e.target.value);
     setUI({ selectedRubricId: e.target.value, customPoints: selected ? selected.value : ui.customPoints });
   });
-
   bind("#customPoints", "input", (e) => setUI({ customPoints: e.target.value }, { render: false }));
   bind("#teacherNote", "input", (e) => setUI({ note: e.target.value }, { render: false }));
   bind("#teacherNote", "blur", (e) => setUI({ note: e.target.value }, { render: false }));
-
   bind("#addPointsBtn", "click", addPoints);
 
   bind("#toggleSessionStatusBtn", "click", () => updateState({ ...state, sessionStatus: state.sessionStatus === "open" ? "closed" : "open" }));
-
   bind("#classNameInput", "change", (e) => updateState({ ...state, className: e.target.value }));
   bind("#sessionTitleInput", "change", (e) => updateState({ ...state, sessionTitle: e.target.value }));
   bind("#sessionCodeInput", "change", (e) => updateState({ ...state, sessionCode: e.target.value.toUpperCase() }));
-
   bind("#printBtn", "click", () => window.print());
   bind("#resetBtn", "click", resetDemo);
 
@@ -930,11 +813,6 @@ function bindEvents() {
   document.querySelectorAll("[data-highlight-node]").forEach((btn) => btn.addEventListener("click", () => setUI({ selectedNode: btn.dataset.highlightNode })));
   document.querySelectorAll("[data-queue-up]").forEach((btn) => btn.addEventListener("click", () => moveQueue(btn.dataset.queueUp, "up")));
   document.querySelectorAll("[data-queue-down]").forEach((btn) => btn.addEventListener("click", () => moveQueue(btn.dataset.queueDown, "down")));
-}
-
-function removeFocusThen(action) {
-  try { document.activeElement?.blur?.(); } catch {}
-  action();
 }
 
 render();
