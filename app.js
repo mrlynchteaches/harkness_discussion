@@ -1,4 +1,3 @@
-
 const STORAGE_KEY = "harkness-teacher-tracker-static-v3";
 const CHANNEL_NAME = "harkness-teacher-tracker-sync";
 const PRESENCE_TTL_MS = 8000;
@@ -58,6 +57,8 @@ let state = loadState();
 const app = document.getElementById("app");
 const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(CHANNEL_NAME) : null;
 let heartbeatTimer = null;
+let renderScheduled = false;
+let lastRenderContext = null;
 
 if (channel) {
   channel.onmessage = (event) => {
@@ -262,9 +263,46 @@ function updateState(next) {
   render();
 }
 
-function setUI(partial) {
+function setUI(partial, options = {}) {
   Object.assign(ui, partial);
-  render();
+  if (options.render !== false) {
+    render();
+  }
+}
+
+function scheduleRender() {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  requestAnimationFrame(() => {
+    renderScheduled = false;
+    render(lastRenderContext);
+    lastRenderContext = null;
+  });
+}
+
+function captureRenderContext() {
+  const active = document.activeElement;
+  return {
+    activeId: active?.id || null,
+    selectionStart: typeof active?.selectionStart === "number" ? active.selectionStart : null,
+    selectionEnd: typeof active?.selectionEnd === "number" ? active.selectionEnd : null,
+    scrollX: window.scrollX,
+    scrollY: window.scrollY
+  };
+}
+
+function restoreRenderContext(ctx) {
+  if (!ctx) return;
+  window.scrollTo({ left: ctx.scrollX || 0, top: ctx.scrollY || 0 });
+  if (!ctx.activeId) return;
+  const el = document.getElementById(ctx.activeId);
+  if (!el) return;
+  try {
+    el.focus({ preventScroll: true });
+    if (ctx.selectionStart !== null && typeof el.setSelectionRange === "function") {
+      el.setSelectionRange(ctx.selectionStart, ctx.selectionEnd ?? ctx.selectionStart);
+    }
+  } catch {}
 }
 
 function getStudent(id) {
@@ -774,7 +812,9 @@ function statCard(label, value, hint) {
   return `<section class="card stat"><div class="muted">${escapeHtml(label)}</div><div class="big">${escapeHtml(value)}</div><div class="subtle">${escapeHtml(hint)}</div></section>`;
 }
 
-function render() {
+function render(preservedContext = null) {
+  const renderContext = preservedContext || captureRenderContext();
+
   if (!ui.selectedSpeaker && state.students[0]?.id) ui.selectedSpeaker = state.students[0].id;
   if (!state.rubric.find((r) => r.id === ui.selectedRubricId) && state.rubric[0]) {
     ui.selectedRubricId = state.rubric[0].id;
@@ -817,6 +857,7 @@ function render() {
     </div>`;
 
   bindEvents();
+  restoreRenderContext(renderContext);
 }
 
 function bindEvents() {
@@ -838,20 +879,38 @@ function bindEvents() {
     const selected = state.rubric.find((r) => r.id === e.target.value);
     setUI({ selectedRubricId: e.target.value, customPoints: selected ? selected.value : ui.customPoints });
   });
-  bind("#customPoints", "input", (e) => setUI({ customPoints: e.target.value }));
-  bind("#teacherNote", "input", (e) => setUI({ note: e.target.value }));
+
+  bind("#customPoints", "input", (e) => setUI({ customPoints: e.target.value }, { render: false }));
+  bind("#teacherNote", "input", (e) => setUI({ note: e.target.value }, { render: false }));
+  bind("#teacherNote", "blur", (e) => setUI({ note: e.target.value }, { render: false }));
+
   bind("#addPointsBtn", "click", addPoints);
 
   bind("#toggleSessionStatusBtn", "click", () => updateState({ ...state, sessionStatus: state.sessionStatus === "open" ? "closed" : "open" }));
-  bind("#classNameInput", "input", (e) => updateState({ ...state, className: e.target.value }));
-  bind("#sessionTitleInput", "input", (e) => updateState({ ...state, sessionTitle: e.target.value }));
-  bind("#sessionCodeInput", "input", (e) => updateState({ ...state, sessionCode: e.target.value.toUpperCase() }));
+
+  bind("#classNameInput", "change", (e) => updateState({ ...state, className: e.target.value }));
+  bind("#sessionTitleInput", "change", (e) => updateState({ ...state, sessionTitle: e.target.value }));
+  bind("#sessionCodeInput", "change", (e) => updateState({ ...state, sessionCode: e.target.value.toUpperCase() }));
+
   bind("#printBtn", "click", () => window.print());
   bind("#resetBtn", "click", resetDemo);
 
-  bind("#newQuestionInput", "input", (e) => setUI({ newQuestion: e.target.value }));
+  bind("#newQuestionInput", "input", (e) => setUI({ newQuestion: e.target.value }, { render: false }));
+  bind("#newQuestionInput", "keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addQuestion();
+    }
+  });
   bind("#addQuestionBtn", "click", addQuestion);
-  bind("#newStudentNameInput", "input", (e) => setUI({ newStudentName: e.target.value }));
+
+  bind("#newStudentNameInput", "input", (e) => setUI({ newStudentName: e.target.value }, { render: false }));
+  bind("#newStudentNameInput", "keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addStudent();
+    }
+  });
   bind("#addStudentBtn", "click", addStudent);
 
   bind("#exportStudentsBtn", "click", exportStudentsCsv);
@@ -866,11 +925,16 @@ function bindEvents() {
   if (rubricInput) rubricInput.addEventListener("change", async (e) => { if (e.target.files?.[0]) await importRubric(e.target.files[0]); render(); });
 
   document.querySelectorAll("[data-remove-student]").forEach((btn) => btn.addEventListener("click", () => removeStudent(btn.dataset.removeStudent)));
-  document.querySelectorAll("[data-toggle-queue]").forEach((btn) => btn.addEventListener("click", () => toggleQueued(btn.dataset.toggleQueue)));
+  document.querySelectorAll("[data-toggle-queue]").forEach((btn) => btn.addEventListener("click", () => removeFocusThen(() => toggleQueued(btn.dataset.toggleQueue))));
   document.querySelectorAll("[data-select-speaker]").forEach((btn) => btn.addEventListener("click", () => setUI({ selectedSpeaker: btn.dataset.selectSpeaker })));
   document.querySelectorAll("[data-highlight-node]").forEach((btn) => btn.addEventListener("click", () => setUI({ selectedNode: btn.dataset.highlightNode })));
   document.querySelectorAll("[data-queue-up]").forEach((btn) => btn.addEventListener("click", () => moveQueue(btn.dataset.queueUp, "up")));
   document.querySelectorAll("[data-queue-down]").forEach((btn) => btn.addEventListener("click", () => moveQueue(btn.dataset.queueDown, "down")));
+}
+
+function removeFocusThen(action) {
+  try { document.activeElement?.blur?.(); } catch {}
+  action();
 }
 
 render();
