@@ -53,7 +53,6 @@ const ui = {
   syncStatus: "waiting",
   classNameDraft: state.className || "",
   sessionTitleDraft: state.sessionTitle || "",
-  sessionCodeDraft: state.sessionCode || "",
   pendingQuestionImportMode: "replace"
 };
 
@@ -67,11 +66,13 @@ if (channel) {
   channel.onmessage = (event) => {
     const data = event?.data;
     if (!data || data.senderId === myTabId) return;
+
     if (data.type === "heartbeat") {
       peers.set(data.senderId, Date.now());
       updateSyncStatus();
       return;
     }
+
     if (data.type === "state-sync") {
       peers.set(data.senderId, Date.now());
       state = data.payload;
@@ -81,6 +82,7 @@ if (channel) {
       render();
     }
   };
+
   sendHeartbeat();
   heartbeatTimer = setInterval(() => {
     sendHeartbeat();
@@ -137,7 +139,6 @@ function saveState() {
 function syncDraftsFromState() {
   ui.classNameDraft = state.className || "";
   ui.sessionTitleDraft = state.sessionTitle || "";
-  ui.sessionCodeDraft = state.sessionCode || "";
 }
 
 function safeJsonParse(text, fallback) {
@@ -163,6 +164,19 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function slugifyFilenamePart(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function getSessionFileStem() {
+  const parts = [slugifyFilenamePart(state.className), slugifyFilenamePart(state.sessionTitle)].filter(Boolean);
+  return parts.length ? parts.join("_") : "discussion";
 }
 
 function colorFromIndex(index) {
@@ -295,12 +309,10 @@ function updateState(next) {
 }
 
 function commitSessionFields() {
-  ui.sessionCodeDraft = ui.sessionCodeDraft.toUpperCase();
   updateState({
     ...state,
     className: ui.classNameDraft,
-    sessionTitle: ui.sessionTitleDraft,
-    sessionCode: ui.sessionCodeDraft
+    sessionTitle: ui.sessionTitleDraft
   });
 }
 
@@ -538,16 +550,16 @@ async function importRubric(file) {
 
 function exportStudentsCsv() {
   const rows = [["displayName", "username", "points", "timesSpoke", "queued"], ...state.students.map((s) => [s.displayName || s.username, s.username, s.points, s.spokeCount, state.queue.includes(s.id) ? "yes" : "no"])];
-  downloadText(`${state.sessionCode || "discussion"}-students.csv`, rows.map((row) => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
+  downloadText(`${getSessionFileStem()}_students.csv`, rows.map((row) => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
 }
 
 function exportEventsCsv() {
   const rows = [["time", "speaker", "respondingTo", "category", "points", "note"], ...state.events.map((e) => [e.timestamp, e.speaker, e.target, e.category, e.points, e.note])];
-  downloadText(`${state.sessionCode || "discussion"}-events.csv`, rows.map((row) => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
+  downloadText(`${getSessionFileStem()}_events.csv`, rows.map((row) => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
 }
 
 function exportJson() {
-  downloadText(`${state.sessionCode || "discussion"}-session.json`, JSON.stringify(state, null, 2), "application/json;charset=utf-8");
+  downloadText(`${getSessionFileStem()}_session.json`, JSON.stringify(state, null, 2), "application/json;charset=utf-8");
 }
 
 function resetDemo() {
@@ -576,7 +588,7 @@ function printRadialImageToPdf() {
 
   const legend = document.querySelector(".svg-wrap .legend-wrap")?.outerHTML || "";
   const title = state.sessionTitle || "Harkness Discussion Tracker";
-  const classLine = [state.className || "", state.sessionCode || ""].filter(Boolean).join(" • ");
+  const classLine = state.className || "";
 
   const win = window.open("", "_blank", "width=1200,height=900");
   if (!win) return;
@@ -602,7 +614,7 @@ function printRadialImageToPdf() {
       <body>
         <div class="wrap">
           <h1>${escapeHtml(title)}</h1>
-          <div class="meta">${escapeHtml(classLine)}</div>
+          ${classLine ? `<div class="meta">${escapeHtml(classLine)}</div>` : ""}
           ${svg.outerHTML}
           ${legend}
         </div>
@@ -723,7 +735,7 @@ function teacherView() {
         <section class="card"><div class="row-between"><h2>Speaker queue</h2></div><div class="queue-list" style="margin-top:16px;">${state.queue.length === 0 ? `<div class="muted">Nobody is waiting to speak.</div>` : ""}${state.queue.map((id, idx) => { const student = getStudent(id); if (!student) return ""; return `<div class="queue-row"><div class="row-between" style="align-items:center;"><div><div style="font-weight:700;">${idx + 1}. ${escapeHtml(student.displayName || student.username)}</div><div class="subtle">${student.points} pts • ${student.spokeCount} contributions logged</div></div><div class="btn-group"><button class="btn small" data-queue-up="${id}">↑</button><button class="btn small" data-queue-down="${id}">↓</button><button class="btn small" data-toggle-queue="${id}">Done</button></div></div></div>`; }).join("")}</div></section>
         <section class="card"><div class="row-between"><h2>Discussion questions</h2><div class="btn-group"><input id="questionsFileInput" class="hidden" type="file" accept=".csv,.txt" /><button class="btn small" id="replaceQuestionsBtn">Replace from file</button><button class="btn small" id="appendQuestionsBtn">Append from file</button></div></div><div class="list-stack" style="margin-top:16px; max-height:360px; overflow:auto; padding-right:4px;">${questionRowsHtml()}</div><div class="two-col-wide" style="margin-top:12px;"><input id="newQuestionInput" type="text" value="${escapeHtml(ui.newQuestion)}" placeholder="Add a new discussion question" /><button class="btn" id="addQuestionBtn">Add question</button></div></section>
         <section class="card"><div class="row-between"><h2>Scoring criteria</h2></div><div class="list-stack" style="margin-top:16px;">${state.rubric.map((item) => `<div class="item" style="display:flex; justify-content:space-between; align-items:center; gap:12px;"><span style="display:flex; align-items:center; gap:8px;"><span class="dot" style="background:${item.color}"></span>${escapeHtml(item.label)}</span><strong>${item.value} pt</strong></div>`).join("")}</div></section>
-        <section class="card"><div class="row-between"><h2>Session controls</h2><button class="btn ${state.sessionStatus === "open" ? "btn-rose" : "btn-teal"}" id="toggleSessionStatusBtn">${state.sessionStatus === "open" ? "Close session + reveal map" : "Re-open session"}</button></div><div class="two-col-even" style="margin-top:16px;"><div><label>Class name</label><input id="classNameInput" type="text" value="${escapeHtml(ui.classNameDraft)}" placeholder="Enter class name" /></div><div><label>Session title</label><input id="sessionTitleInput" type="text" value="${escapeHtml(ui.sessionTitleDraft)}" placeholder="Enter session title" /></div><div><label>Session code</label><input id="sessionCodeInput" type="text" value="${escapeHtml(ui.sessionCodeDraft)}" placeholder="Enter session code" /></div><div class="btn-group" style="align-items:end;"><button class="btn" id="printBtn">PDF Print Radial Image</button><button class="btn" id="resetBtn">Reset demo</button></div></div></section>
+        <section class="card"><div class="row-between"><h2>Session details</h2><button class="btn ${state.sessionStatus === "open" ? "btn-rose" : "btn-teal"}" id="toggleSessionStatusBtn">${state.sessionStatus === "open" ? "Close session + reveal map" : "Re-open session"}</button></div><div class="two-col-even" style="margin-top:16px;"><div><label>Class name</label><input id="classNameInput" type="text" value="${escapeHtml(ui.classNameDraft)}" placeholder="Enter class name" /></div><div><label>Session title</label><input id="sessionTitleInput" type="text" value="${escapeHtml(ui.sessionTitleDraft)}" placeholder="Enter session title" /></div><div class="btn-group" style="align-items:end;"><button class="btn" id="printBtn">PDF Print Radial Image</button><button class="btn" id="resetBtn">Reset demo</button></div></div></section>
         <section class="card"><div class="row-between"><h2>Recent contribution log</h2></div><div class="event-list" style="margin-top:16px;">${state.events.map((event) => `<div class="event-row"><div class="row-between"><div><div style="font-weight:700;">${escapeHtml(event.speaker)}</div><div class="subtle">${escapeHtml(event.timestamp)}</div></div><div class="legend-pill">+${event.points} pts</div></div><div style="margin-top:6px; color:#475569;">${escapeHtml(event.category)}${event.target ? ` • responding to ${escapeHtml(event.target)}` : ""}</div>${event.note ? `<div style="margin-top:6px; color:#64748b;">${escapeHtml(event.note)}</div>` : ""}</div>`).join("")}</div></section>
       </div>
     </div>`;
@@ -732,7 +744,7 @@ function teacherView() {
 function displayView() {
   const queueStudents = state.queue.map((id) => getStudent(id)).filter(Boolean);
   const gridClass = state.sessionStatus === "closed" ? "display-grid-closed" : "display-grid-open";
-  return `<div class="stack"><section class="card"><div class="hero-row"><div><div class="badge">Student display</div><h1 style="margin:12px 0 8px;">${escapeHtml(state.sessionTitle || "Discussion Session")}</h1><div class="muted">${escapeHtml(state.className || "Class")}${state.sessionCode ? ` • Session code: <span class="mono" style="font-weight:700;">${escapeHtml(state.sessionCode)}</span>` : ""}</div></div><div class="lite"><div class="label">Discussion status</div><div class="value">${state.sessionStatus === "closed" ? "Closed — map visible" : "Open — queue/questions visible"}</div></div></div></section><div class="${gridClass}"><section class="card"><div class="row-between"><h2>Speaking queue</h2></div><div class="list-stack" style="margin-top:16px;">${queueStudents.length === 0 ? `<div class="muted">No one is waiting to speak right now.</div>` : ""}${queueStudents.map((student, index) => `<div class="display-queue">${index + 1}. ${escapeHtml(student.displayName || student.username)}</div>`).join("")}</div></section><div class="stack"><section class="card"><div class="row-between"><h2>Discussion questions</h2></div><div class="list-stack" style="margin-top:16px;">${state.questions.map((q, index) => `<div class="item">${index + 1}. ${escapeHtml(q)}</div>`).join("")}${state.questions.length === 0 ? `<div class="muted">No discussion questions entered yet.</div>` : ""}</div></section><section class="card"><div class="row-between"><h2>Scoring criteria</h2></div><div class="list-stack" style="margin-top:16px;">${state.rubric.map((item) => `<div class="item" style="display:flex; justify-content:space-between; align-items:center; gap:12px;"><span style="display:flex; align-items:center; gap:8px;"><span class="dot" style="background:${item.color}"></span>${escapeHtml(item.label)}</span><strong>${item.value} pt</strong></div>`).join("")}</div></section></div></div>${state.sessionStatus === "closed" ? `<section class="card"><div class="row-between"><h2>Final discussion map</h2></div>${radialSvg(true)}</section>` : ""}</div>`;
+  return `<div class="stack"><section class="card"><div class="hero-row"><div><div class="badge">Student display</div><h1 style="margin:12px 0 8px;">${escapeHtml(state.sessionTitle || "Discussion Session")}</h1><div class="muted">${escapeHtml(state.className || "Class")}</div></div><div class="lite"><div class="label">Discussion status</div><div class="value">${state.sessionStatus === "closed" ? "Closed — map visible" : "Open — queue/questions visible"}</div></div></div></section><div class="${gridClass}"><section class="card"><div class="row-between"><h2>Speaking queue</h2></div><div class="list-stack" style="margin-top:16px;">${queueStudents.length === 0 ? `<div class="muted">No one is waiting to speak right now.</div>` : ""}${queueStudents.map((student, index) => `<div class="display-queue">${index + 1}. ${escapeHtml(student.displayName || student.username)}</div>`).join("")}</div></section><div class="stack"><section class="card"><div class="row-between"><h2>Discussion questions</h2></div><div class="list-stack" style="margin-top:16px;">${state.questions.map((q, index) => `<div class="item">${index + 1}. ${escapeHtml(q)}</div>`).join("")}${state.questions.length === 0 ? `<div class="muted">No discussion questions entered yet.</div>` : ""}</div></section><section class="card"><div class="row-between"><h2>Scoring criteria</h2></div><div class="list-stack" style="margin-top:16px;">${state.rubric.map((item) => `<div class="item" style="display:flex; justify-content:space-between; align-items:center; gap:12px;"><span style="display:flex; align-items:center; gap:8px;"><span class="dot" style="background:${item.color}"></span>${escapeHtml(item.label)}</span><strong>${item.value} pt</strong></div>`).join("")}</div></section></div></div>${state.sessionStatus === "closed" ? `<section class="card"><div class="row-between"><h2>Final discussion map</h2></div>${radialSvg(true)}</section>` : ""}</div>`;
 }
 
 function render(preservedContext = null) {
@@ -783,13 +795,10 @@ function bindEvents() {
 
   bind("#classNameInput", "input", (e) => setUI({ classNameDraft: e.target.value }, { render: false }));
   bind("#sessionTitleInput", "input", (e) => setUI({ sessionTitleDraft: e.target.value }, { render: false }));
-  bind("#sessionCodeInput", "input", (e) => setUI({ sessionCodeDraft: e.target.value }, { render: false }));
   bind("#classNameInput", "blur", commitSessionFields);
   bind("#sessionTitleInput", "blur", commitSessionFields);
-  bind("#sessionCodeInput", "blur", commitSessionFields);
   bind("#classNameInput", "keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commitSessionFields(); } });
   bind("#sessionTitleInput", "keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commitSessionFields(); } });
-  bind("#sessionCodeInput", "keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commitSessionFields(); } });
 
   bind("#toggleSessionStatusBtn", "click", () => updateState({ ...state, sessionStatus: state.sessionStatus === "open" ? "closed" : "open" }));
   bind("#printBtn", "click", printRadialImageToPdf);
